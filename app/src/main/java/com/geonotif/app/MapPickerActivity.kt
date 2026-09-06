@@ -1,8 +1,8 @@
 package com.geonotif.app
 
-import android.app.Activity
+import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.appbar.MaterialToolbar
 import android.content.Intent
-import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -21,12 +21,13 @@ import java.io.File
 import java.util.Locale
 
 /** Interactive OSM tile picker. No geocoder, API key, or location permission required. */
-class MapPickerActivity : Activity() {
+class MapPickerActivity : AppCompatActivity() {
     companion object {
         const val LATITUDE = "latitude"
         const val LONGITUDE = "longitude"
     }
 
+    private val palette by lazy { AppUi.palette(this) }
     private lateinit var map: MapView
     private lateinit var marker: Marker
     private lateinit var coordinates: TextView
@@ -43,7 +44,7 @@ class MapPickerActivity : Activity() {
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(palette.background)
         }
         root.setOnApplyWindowInsetsListener { view, insets ->
             if (Build.VERSION.SDK_INT >= 30) {
@@ -56,48 +57,61 @@ class MapPickerActivity : Activity() {
             }
             insets
         }
-        fun label(value: String, size: Float) = TextView(this).apply {
-            text = value; textSize = size; setTextColor(Color.rgb(26, 47, 62))
-            val padding = (12 * resources.displayMetrics.density).toInt()
-            setPadding(padding, padding / 2, padding, padding / 2)
-        }
-        root.addView(label("Choose a destination", 23f))
-        root.addView(label("Drag to explore, pinch to zoom, and tap to place your stop.", 14f))
-        root.addView(label("Internet is needed for uncached map areas. If tiles are blank, check your connection and try again.", 12f))
+        fun dp(value: Int) = AppUi.dp(this, value)
+        fun label(value: String, size: Float) = AppUi.label(this, value, size)
+        root.addView(MaterialToolbar(this).apply {
+            title = "Find your stop"
+            subtitle = "Pan, zoom, and tap to drop a pin"
+            setNavigationIcon(R.drawable.ic_arrow_back)
+            navigationContentDescription = "Cancel location selection"
+            setNavigationOnClickListener { setResult(RESULT_CANCELED); finish() }
+            setTitleTextColor(palette.ink)
+            setSubtitleTextColor(palette.muted)
+            setNavigationIconTint(palette.ink)
+        }, LinearLayout.LayoutParams(-1, -2))
         map = MapView(this).apply {
             setTileSource(TileSourceFactory.MAPNIK)
+            if (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES) {
+                overlayManager.tilesOverlay.setColorFilter(org.osmdroid.views.overlay.TilesOverlay.INVERT_COLORS)
+            }
             setMultiTouchControls(true)
             minZoomLevel = 2.0
             maxZoomLevel = 19.0
             contentDescription = "OpenStreetMap destination picker. Tap the map to select a location."
         }
-        root.addView(map, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(AppUi.surface(this, map).apply { radius = dp(24).toFloat() },
+            LinearLayout.LayoutParams(-1, 0, 1f).apply {
+                marginStart = dp(12); marginEnd = dp(12); topMargin = dp(8)
+            })
         // Always visible attribution, not obscured by map controls or selection UI.
         root.addView(label("© OpenStreetMap contributors", 13f).apply {
-            setTextColor(Color.rgb(22, 125, 141))
+            setTextColor(palette.teal)
+            minHeight = dp(48)
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(dp(20), 0, dp(20), 0)
             setOnClickListener {
                 try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.openstreetmap.org/copyright"))) }
                 catch (_: android.content.ActivityNotFoundException) { }
             }
         })
-        coordinates = label("No location selected — tap the map", 15f)
-        root.addView(coordinates)
-        val actions = LinearLayout(this)
-        actions.addView(Button(this).apply {
-            text = "Cancel"; isAllCaps = false
-            setOnClickListener { setResult(RESULT_CANCELED); finish() }
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        confirm = Button(this).apply {
-            text = "Use this location"; isAllCaps = false; isEnabled = false
-            setOnClickListener {
-                selected?.let {
-                    setResult(RESULT_OK, Intent().putExtra(LATITUDE, it.latitude).putExtra(LONGITUDE, it.longitude))
-                    finish()
-                }
-            }
+        val selection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(12))
         }
-        actions.addView(confirm, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(actions)
+        coordinates = label("Tap the map to choose your destination", 16f)
+        selection.addView(coordinates)
+        selection.addView(label("Blank map? Connect to the internet to load new areas.", 12f).apply { setTextColor(palette.muted) })
+        confirm = AppUi.button(this, "Use this location", primary = true) {
+            selected?.let {
+                setResult(RESULT_OK, Intent().putExtra(LATITUDE, it.latitude).putExtra(LONGITUDE, it.longitude))
+                finish()
+            }
+        }.apply { isEnabled = false }
+        selection.addView(confirm)
+        root.addView(AppUi.surface(this, selection), LinearLayout.LayoutParams(-1, -2).apply {
+            marginStart = dp(12); marginEnd = dp(12); bottomMargin = dp(12)
+        })
         setContentView(root)
 
         map.overlays.add(MapEventsOverlay(object : MapEventsReceiver {
@@ -107,6 +121,7 @@ class MapPickerActivity : Activity() {
         marker = Marker(map).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
             title = "Selected destination"
+            icon = androidx.appcompat.content.res.AppCompatResources.getDrawable(this@MapPickerActivity, R.drawable.ic_map_pin)
             setOnMarkerClickListener { _, _ -> true }
         }
         val latitude = savedInstanceState?.getDouble("centerLat") ?: intent.getDoubleExtra(LATITUDE, 20.0)

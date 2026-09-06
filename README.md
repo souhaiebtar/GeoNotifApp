@@ -4,6 +4,7 @@ A native Kotlin Android app that alerts you when you approach a saved destinatio
 
 ## Features
 
+- Material Design 3 UI with automatic system light/dark theme, a journey dashboard, destination cards, and matching map controls.
 - Multiple destinations, stored locally across app restarts.
 - Per-destination enable/disable, name, latitude/longitude, and arrival radius (100–10,000 m).
 - Choose a system ringtone/alarm sound (or Silent) independently for each destination.
@@ -34,7 +35,7 @@ APK: `app/build/outputs/apk/debug/app-debug.apk`.
 
 The Gradle 8.9 wrapper is included with distribution checksum verification.
 
-**Build validation:** `:app:assembleDebug` and `:app:testDebugUnitTest` passed using the Android Studio SDK at `/home/unknown/Android/Sdk`. All 3 unit tests passed. `:app:lintDebug` also passed after adding the map picker (0 errors, 9 warnings). The debug APK is available at the path above. The map interaction, current-location popup, and screen-off location/audio/vibration behavior still require on-device validation; these checks are not covered by the unit tests.
+**Build validation:** `:app:assembleDebug` and `:app:testDebugUnitTest` passed using the Android Studio SDK at `/home/unknown/Android/Sdk`. All 3 unit tests passed. `:app:lintDebug` also passed after the Material 3 / DayNight redesign (0 errors). `python3 scripts/check_theme.py` verifies paired theme tokens and 20 text-contrast combinations at ≥4.5:1. The redesigned dashboard and Add destination dialog were visually checked on the connected phone in light/dark mode. The map selection flow, live theme-switch draft restoration, and screen-off location/audio/vibration still need complete on-device acceptance testing.
 
 ## Usage
 
@@ -60,6 +61,18 @@ If several destination circles are entered on the same update, one notification 
 - Destination coordinates are stored only in private app preferences. Device backup is disabled and no location history is retained.
 - Map imagery comes from OpenStreetMap's public tile service via osmdroid 6.1.20. Tile requests reveal your IP address and viewed map area to that provider; saved destinations and monitoring updates are not uploaded. No address search/geocoding is included.
 
+## Material Design 3 and system theme
+
+The app uses `Theme.Material3.DayNight.NoActionBar` with AndroidX AppCompat and Google's Material Components for Android (native Views, not a web UI). Components include Material cards, switches, filled/tonal buttons, dialogs, outlined text fields, an exposed vibration dropdown, and a map toolbar.
+
+The phone's system light/dark setting selects matching semantic color tokens in `res/values/colors.xml` and `res/values-night/colors.xml`. No separate in-app theme override is applied. Surfaces, text, controls, dialogs, and system-bar icons adapt automatically; the branded journey panel intentionally remains dark in both modes. Map tiles use osmdroid's local night-color filter in dark mode (same OSM provider and cache, no extra requests). The destination editor preserves unfinished fields on activity recreation, including theme changes and rotation.
+
+```sh
+python3 scripts/check_theme.py
+```
+
+This checks palette parity, the DayNight parent, and text contrast. It does not replace screen-reader, font-scaling, or on-device visual testing.
+
 ## Map provider
 
 OpenStreetMap was chosen for its free, keyless map data and street detail. The native osmdroid renderer supports gestures, markers, and a disk tile cache without Google Play Services. Attribution (`© OpenStreetMap contributors`) remains visible and links to the [OSM copyright page](https://www.openstreetmap.org/copyright).
@@ -68,7 +81,8 @@ Tiles use HTTPS, an app-specific User-Agent, and the renderer's HTTP-aware cache
 
 ## Project layout
 
-- `app/src/main/java/com/geonotif/app/MainActivity.kt`: native Android UI, destination editor, permission flow.
+- `app/src/main/java/com/geonotif/app/AppUi.kt`: shared Material components, theme-token palette, and decorative route artwork.
+- `app/src/main/java/com/geonotif/app/MainActivity.kt`: journey dashboard, destination editor, permission flow.
 - `app/src/main/java/com/geonotif/app/MapPickerActivity.kt`: OpenStreetMap display, pin selection, attribution, and rotation-state preservation.
 - `app/src/main/java/com/geonotif/app/Destination.kt`: destination model, JSON persistence, arrival validation rules.
 - `app/src/main/java/com/geonotif/app/LocationMonitorService.kt`: foreground location tracking, per-session triggering, notifications, audio, vibration.
@@ -86,3 +100,4 @@ Tiles use HTTPS, an app-specific User-Agent, and the renderer's HTTP-aware cache
 8. Verify Add destination opens the two-choice popup. Test current-position success, denied permission, GPS off, timeout, retry, and cancellation; none should silently create a destination.
 9. Choose another location without location permission; pan/zoom, tap to move the pin, rotate, confirm, and verify the editor coordinates match. Save and verify persistence. Cancel either screen and verify nothing is added.
 10. Test map rendering online and with no connection; confirm the offline guidance and OSM attribution remain visible.
+11. Switch the system between light and dark while on the dashboard, map, and an unfinished destination form. Check contrast, system bars, map selection, and preservation of typed form values. Repeat with large system fonts and landscape orientation.

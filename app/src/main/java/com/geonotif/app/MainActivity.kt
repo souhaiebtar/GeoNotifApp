@@ -1,13 +1,16 @@
 package com.geonotif.app
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AlertDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.textfield.TextInputLayout
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.button.MaterialButton
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.location.LocationManager
 import android.media.RingtoneManager
 import android.net.Uri
@@ -18,22 +21,27 @@ import android.view.View
 import android.view.WindowInsets
 import android.widget.*
 
-class MainActivity : Activity() {
-    private val ink = Color.rgb(26, 47, 62)
-    private val teal = Color.rgb(22, 125, 141)
+class MainActivity : AppCompatActivity() {
+    private val palette by lazy { AppUi.palette(this) }
+    private val ink get() = palette.ink
+    private val teal get() = palette.teal
+    private lateinit var journeyTitle: TextView
+    private lateinit var journeyBadge: TextView
+    private lateinit var destinationCount: TextView
+    private lateinit var dismissButton: Button
     private lateinit var content: LinearLayout
     private lateinit var statusText: TextView
     private lateinit var monitorButton: Button
     private var destinations = emptyList<Destination>()
     private var selectedSound: String? = null
     private var soundButton: Button? = null
+    private var editorState: (() -> Bundle)? = null
     private var currentLocationListener: android.location.LocationListener? = null
     private var currentLocationTimeout: Runnable? = null
     private val handler = Handler(Looper.getMainLooper())
     private val statusPoll = object : Runnable {
         override fun run() {
-            statusText.text = LocationMonitorService.status
-            monitorButton.text = if (LocationMonitorService.running) "Stop monitoring" else "Start monitoring"
+            updateJourneyState()
             handler.postDelayed(this, 1_000)
         }
     }
@@ -41,6 +49,15 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         render()
+        savedInstanceState?.getBundle("editor")?.let { draft ->
+            val existing = destinations.find { it.id == draft.getString("existingId") }
+            editDestination(existing, restored = draft)
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        editorState?.let { outState.putBundle("editor", it()) }
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
@@ -67,28 +84,29 @@ class MainActivity : Activity() {
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-    private fun text(value: String, size: Float = 16f, bold: Boolean = false) = TextView(this).apply {
-        text = value; textSize = size; setTextColor(ink)
-        if (bold) setTypeface(typeface, Typeface.BOLD)
-        setPadding(0, dp(5), 0, dp(5))
-    }
-    private fun button(label: String, click: () -> Unit) = Button(this).apply {
-        text = label; isAllCaps = false; setTextColor(teal)
-        setOnClickListener { click() }
+    private fun text(value: String, size: Float = 16f, bold: Boolean = false) = AppUi.label(this, value, size, bold)
+    private fun button(label: String, click: () -> Unit) = AppUi.button(this, label, onClick = click)
+    private fun primaryButton(label: String, click: () -> Unit) = AppUi.button(this, label, primary = true, onClick = click)
+    private fun muted(value: String, size: Float = 14f) = text(value, size).apply { setTextColor(palette.muted) }
+    private fun gap(height: Int = 12) = View(this).apply { layoutParams = LinearLayout.LayoutParams(1, dp(height)) }
+    private fun pill(value: String) = text(value, 12f, true).apply {
+        setTextColor(teal)
+        background = AppUi.shape(this@MainActivity, palette.pale, 12)
+        setPadding(dp(10), dp(6), dp(10), dp(6))
     }
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     private fun card(): LinearLayout = column().apply {
-        setPadding(dp(18), dp(12), dp(18), dp(12))
-        background = GradientDrawable().apply {
-            setColor(Color.WHITE); cornerRadius = dp(18).toFloat()
-        }
-        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) }
+        setPadding(dp(20), dp(18), dp(20), dp(18))
+        layoutParams = LinearLayout.LayoutParams(-1, -2)
     }
 
     private fun render() {
         destinations = DestinationStore.load(this)
-        val scroll = ScrollView(this).apply { isFillViewport = true }
-        content = column().apply { setPadding(dp(22), dp(20), dp(22), dp(24)) }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true; isVerticalScrollBarEnabled = false
+            setBackgroundColor(palette.background)
+        }
+        content = column().apply { setPadding(dp(22), dp(24), dp(22), dp(32)) }
         scroll.addView(content)
         // Android 15 enforces edge-to-edge for target 35. Respect system bars and keyboard.
         scroll.setOnApplyWindowInsetsListener { view, insets ->
@@ -103,75 +121,149 @@ class MainActivity : Activity() {
             insets
         }
         setContentView(scroll)
-        content.addView(text("GeoNotif", 32f, true))
-        content.addView(text("Rest on the ride. Know when you’re close.", 16f))
+        val brand = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        brand.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_location); imageTintList = android.content.res.ColorStateList.valueOf(AppUi.ink)
+            background = AppUi.shape(this@MainActivity, AppUi.mint, 15)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginEnd = dp(12) })
+        brand.addView(text("GeoNotif", 26f, true), LinearLayout.LayoutParams(0, -2, 1f))
+        brand.addView(pill("ON THE GO"))
+        content.addView(brand)
+        content.addView(gap(20))
+        content.addView(text("Enjoy the journey.", 30f, true))
+        content.addView(muted("A little peace of mind, all the way to your stop.", 15f))
+        content.addView(gap(18))
         val monitoring = card()
-        monitoring.addView(text("YOUR JOURNEY", 12f, true))
-        statusText = text(LocationMonitorService.status, 18f, true)
+        val heroTop = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        val heroCopy = column()
+        journeyBadge = text("", 11f, true).apply { setTextColor(AppUi.mint); letterSpacing = 0.12f }
+        journeyTitle = text("", 24f, true).apply { setTextColor(Color.WHITE) }
+        heroCopy.addView(journeyBadge)
+        heroCopy.addView(journeyTitle)
+        heroTop.addView(heroCopy, LinearLayout.LayoutParams(0, -2, 1f))
+        heroTop.addView(JourneyArt(this), LinearLayout.LayoutParams(dp(105), dp(105)))
+        monitoring.addView(heroTop)
+        statusText = text("", 14f).apply {
+            setTextColor(Color.rgb(209, 225, 227))
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
         monitoring.addView(statusText)
-        monitoring.addView(text("Each enabled destination alerts once per session. Restart monitoring to re-arm your stops.", 14f))
-        monitorButton = button(if (LocationMonitorService.running) "Stop monitoring" else "Start monitoring") {
+        monitoring.addView(gap(10))
+        monitorButton = primaryButton("Start monitoring") {
             if (LocationMonitorService.running) stopService(Intent(this, LocationMonitorService::class.java))
             else startMonitoring()
         }
+        (monitorButton as MaterialButton).apply {
+            backgroundTintList = android.content.res.ColorStateList.valueOf(AppUi.mint)
+            setTextColor(AppUi.ink)
+        }
         monitoring.addView(monitorButton)
-        monitoring.addView(button("Dismiss current alarm") {
+        dismissButton = button("Dismiss current alarm") {
             if (LocationMonitorService.running) startService(Intent(this, LocationMonitorService::class.java)
                 .setAction(LocationMonitorService.SILENCE))
-        })
-        content.addView(monitoring)
-        content.addView(text("Saved destinations", 23f, true))
-        content.addView(button("+ Add destination") { showAddDestinationOptions() })
-        if (destinations.isEmpty()) {
-            content.addView(card().apply {
-                addView(text("Where are you heading?", 20f, true))
-                addView(text("Save your current location or choose a stop on the map, then pick your arrival radius, sound, and vibration."))
-            })
         }
-        destinations.forEach { destination ->
-            content.addView(card().apply {
-                addView(Switch(this@MainActivity).apply {
-                    text = destination.name; textSize = 20f; setTextColor(ink)
+        monitoring.addView(dismissButton)
+        monitoring.addView(text("One alert per stop, per journey. Restart to re-arm.", 12f).apply { setTextColor(Color.rgb(191, 213, 215)) })
+        content.addView(AppUi.surface(this, monitoring, dark = true))
+        content.addView(gap(8))
+        val section = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        section.addView(text("Your destinations", 23f, true), LinearLayout.LayoutParams(0, -2, 1f))
+        destinationCount = pill("")
+        section.addView(destinationCount)
+        content.addView(section)
+        content.addView(muted("Your places. Your wake-up call."))
+        content.addView(button("+  Add destination") { showAddDestinationOptions() })
+        content.addView(gap(10))
+        if (destinations.isEmpty()) {
+            content.addView(AppUi.surface(this, card().apply {
+                addView(pill("YOUR NEXT STOP STARTS HERE"), LinearLayout.LayoutParams(-2, -2))
+                addView(gap())
+                addView(text("Where are we headed?", 22f, true))
+                addView(muted("Save a favorite stop or drop a pin on the map. We’ll keep an eye on the distance while you take a break."))
+            }))
+        }
+        destinations.forEachIndexed { index, destination ->
+            content.addView(AppUi.surface(this, card().apply {
+                val heading = LinearLayout(this@MainActivity).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+                heading.addView(pill(String.format(java.util.Locale.US, "%02d", index + 1)),
+                    LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(12) })
+                heading.addView(text(destination.name, 21f, true), LinearLayout.LayoutParams(0, -2, 1f))
+                heading.addView(MaterialSwitch(this@MainActivity).apply {
                     isChecked = destination.enabled
+                    minHeight = dp(48); minWidth = dp(48)
                     contentDescription = "Enable ${destination.name}"
                     setOnCheckedChangeListener { _, checked ->
                         destinations = destinations.map { if (it.id == destination.id) it.copy(enabled = checked) else it }
-                        persist()
+                        persist(); updateJourneyState()
                     }
                 })
-                addView(text("${destination.latitude}, ${destination.longitude}", 14f))
-                addView(text("Alert within ${destination.radiusMeters} m", 17f, true))
-                addView(text("${soundName(destination.soundUri)} · ${destination.vibration} vibration", 14f))
+                addView(heading)
+                addView(muted(String.format(java.util.Locale.US, "%.5f, %.5f", destination.latitude, destination.longitude), 12f))
+                addView(gap(10))
+                addView(pill("WITHIN ${destination.radiusMeters} m"), LinearLayout.LayoutParams(-2, -2))
+                addView(gap(8))
+                addView(muted("Sound  ·  ${soundName(destination.soundUri)}"))
+                addView(muted("Vibration  ·  ${destination.vibration}"))
+                addView(gap(8))
                 addView(LinearLayout(this@MainActivity).apply {
-                    addView(button("Edit") { editDestination(destinations.first { it.id == destination.id }) },
-                        LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(button("Edit stop") { editDestination(destinations.first { it.id == destination.id }) },
+                        LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
                     addView(button("Delete") {
-                        AlertDialog.Builder(this@MainActivity).setTitle("Delete ${destination.name}?")
+                        MaterialAlertDialogBuilder(this@MainActivity).setTitle("Delete ${destination.name}?")
                             .setMessage("This removes the saved destination.")
                             .setNegativeButton("Cancel", null).setPositiveButton("Delete") { _, _ ->
                                 destinations = destinations.filterNot { it.id == destination.id }
                                 persist(); render()
                             }.show()
-                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                    }.apply {
+                        setTextColor(palette.danger)
+                        backgroundTintList = android.content.res.ColorStateList.valueOf(palette.dangerContainer)
+                    },
+                        LinearLayout.LayoutParams(0, -2, 1f))
                 })
-            })
+            }))
         }
-        content.addView(text("Before you rest", 20f, true))
-        content.addView(text("Keep location and notifications enabled. Audio uses your alarm volume; silent mode, Do Not Disturb, battery restrictions, and poor GPS reception can affect alerts. A 500–1,000 m radius is a useful starting point on public transport. This is not a guaranteed wake-up alarm.", 14f))
-        content.addView(button("Notification settings") {
-            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+        content.addView(gap(8))
+        content.addView(AppUi.surface(this, card().apply {
+            addView(text("A smoother ride", 19f, true))
+            addView(muted("Keep location and notifications on, and check your alarm volume. A 500–1,000 m radius works well as a starting point."))
+            addView(muted("GPS reception, Do Not Disturb, and battery restrictions can affect alerts. This is not a guaranteed wake-up alarm.", 12f))
+            addView(button("Notification settings") {
+                startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+            })
+            addView(button("Location settings") { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) })
+        }))
+        content.addView(muted("MADE FOR THE JOURNEY", 11f).apply {
+            gravity = android.view.Gravity.CENTER; letterSpacing = 0.15f
         })
-        content.addView(button("Location settings") { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) })
+        updateJourneyState()
+    }
+
+    private fun updateJourneyState() {
+        val running = LocationMonitorService.running
+        val newStatus = if (running) LocationMonitorService.status else "Pick your stops, settle in, and start monitoring when you’re ready."
+        if (statusText.text.toString() != newStatus) statusText.text = newStatus
+        journeyBadge.text = if (running) "●  JOURNEY ACTIVE" else "●  READY TO GO"
+        journeyTitle.text = if (running) "Watching\nyour stops." else "Your next stop,\nin sight."
+        monitorButton.text = if (running) "Stop monitoring" else "Start monitoring  →"
+        dismissButton.visibility = if (running) View.VISIBLE else View.GONE
+        destinationCount.text = "${destinations.count { it.enabled }} active"
     }
 
     private fun showAddDestinationOptions() {
-        val choices = column().apply { setPadding(dp(18), dp(8), dp(18), dp(8)) }
-        val dialog = AlertDialog.Builder(this).setTitle("Add destination")
+        val choices = column().apply { setPadding(dp(24), dp(12), dp(24), dp(16)) }
+        choices.addView(muted("Every good journey starts with a destination."))
+        choices.addView(gap())
+        val dialog = MaterialAlertDialogBuilder(this).setTitle("Where to?")
             .setView(choices).setNegativeButton("Cancel", null).create()
-        choices.addView(button("Save current location") {
+        choices.addView(primaryButton("Save current location") {
             dialog.dismiss()
             saveCurrentLocation()
         })
+        choices.addView(muted("Make a stop out of where you are right now.", 13f))
+        choices.addView(gap())
         choices.addView(button("Choose other location") {
             dialog.dismiss()
             val intent = Intent(this, MapPickerActivity::class.java)
@@ -182,7 +274,9 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, 201)
         })
-        choices.addView(text("The map uses OpenStreetMap. Online tiles share the viewed area and your IP address with the tile provider. No API key is needed.", 13f))
+        choices.addView(muted("Explore the map and drop a pin on your stop.", 13f))
+        choices.addView(gap())
+        choices.addView(muted("Maps by OpenStreetMap. The tile provider receives your IP address and viewed area.", 12f))
         dialog.show()
     }
 
@@ -191,7 +285,7 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 102)
             return
         }
-        val progress = AlertDialog.Builder(this).setTitle("Current location")
+        val progress = MaterialAlertDialogBuilder(this).setTitle("Current location")
             .setMessage("Getting a fresh location… This may take up to 20 seconds.")
             .setNegativeButton("Cancel", null).create()
         progress.setOnDismissListener { cancelCurrentLocation() }
@@ -205,7 +299,7 @@ class MainActivity : Activity() {
         }, onFailure = { message ->
             progress.dismiss()
             if (!isFinishing && !isDestroyed) {
-                AlertDialog.Builder(this).setTitle("Location unavailable").setMessage(message)
+                MaterialAlertDialogBuilder(this).setTitle("Location unavailable").setMessage(message)
                     .setNegativeButton("Cancel", null)
                     .setNeutralButton("Location settings") { _, _ ->
                         startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
@@ -232,7 +326,7 @@ class MainActivity : Activity() {
             permissions += Manifest.permission.POST_NOTIFICATIONS
         }
         if (permissions.isNotEmpty()) {
-            AlertDialog.Builder(this).setTitle("Allow arrival alerts")
+            MaterialAlertDialogBuilder(this).setTitle("Allow arrival alerts")
                 .setMessage("GeoNotif needs precise location while monitoring and notification permission to alert you with the screen off. Monitoring stays on this device; the optional map downloads tiles for the area you view. Choose precise location in the permission dialog.")
                 .setNegativeButton("Cancel", null).setPositiveButton("Continue") { _, _ ->
                     requestPermissions(permissions.toTypedArray(), 100)
@@ -255,7 +349,7 @@ class MainActivity : Activity() {
             if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                 saveCurrentLocation()
             } else {
-                AlertDialog.Builder(this).setTitle("Precise location needed")
+                MaterialAlertDialogBuilder(this).setTitle("Precise location needed")
                     .setMessage("Allow precise location in app settings to save your current position, or choose another location on the map without location permission.")
                     .setNegativeButton("Cancel", null).setPositiveButton("App settings") { _, _ ->
                         startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
@@ -264,7 +358,7 @@ class MainActivity : Activity() {
         }
         if (requestCode == 100) {
             if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) startMonitoring()
-            else AlertDialog.Builder(this).setTitle("Permissions needed")
+            else MaterialAlertDialogBuilder(this).setTitle("Permissions needed")
                 .setMessage("Precise location and notifications are required. You can enable them in app settings and then tap Start monitoring.")
                 .setNegativeButton("Not now", null).setPositiveButton("App settings") { _, _ ->
                     startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
@@ -272,34 +366,58 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun editDestination(existing: Destination?, initialLatitude: Double? = null, initialLongitude: Double? = null) {
-        val form = column().apply { setPadding(dp(22), dp(8), dp(22), dp(8)) }
+    private fun editDestination(existing: Destination?, initialLatitude: Double? = null, initialLongitude: Double? = null, restored: Bundle? = null) {
+        val form = column().apply { setPadding(dp(24), dp(12), dp(24), dp(16)) }
+        form.addView(muted("Make it your stop. Give it a name and choose how you’d like to be alerted."))
+        form.addView(gap())
         fun field(label: String, value: String, numeric: Boolean = false): EditText {
-            form.addView(text(label, 14f, true))
-            return EditText(this).apply {
-                setSingleLine(); setText(value); hint = label
-                if (numeric) inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
-                form.addView(this)
+            val container = TextInputLayout(this).apply {
+                hint = label
+                boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+                setBoxCornerRadii(dp(12).toFloat(), dp(12).toFloat(), dp(12).toFloat(), dp(12).toFloat())
             }
+            val input = TextInputEditText(container.context).apply {
+                setSingleLine(); setText(value)
+                minHeight = dp(56)
+                if (numeric) inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
+            }
+            container.addView(input, LinearLayout.LayoutParams(-1, -2))
+            form.addView(container, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+            return input
         }
-        val name = field("Destination name", existing?.name ?: "")
-        val latitude = field("Latitude (−90 to 90)", (existing?.latitude ?: initialLatitude)?.toString() ?: "", true)
-        val longitude = field("Longitude (−180 to 180)", (existing?.longitude ?: initialLongitude)?.toString() ?: "", true)
+        val name = field("Destination name", restored?.getString("name") ?: existing?.name ?: "")
+        val latitude = field("Latitude (−90 to 90)", restored?.getString("latitude") ?: (existing?.latitude ?: initialLatitude)?.toString() ?: "", true)
+        val longitude = field("Longitude (−180 to 180)", restored?.getString("longitude") ?: (existing?.longitude ?: initialLongitude)?.toString() ?: "", true)
         form.addView(text("Review the selected coordinates, or update them with your current position below.", 13f))
         form.addView(button("Use current location") { useCurrentLocation(latitude, longitude) })
-        val radius = field("Arrival radius in meters (100–10,000)", (existing?.radiusMeters ?: 500).toString(), true)
-        selectedSound = existing?.soundUri
+        val radius = field("Arrival radius in meters (100–10,000)", restored?.getString("radius") ?: (existing?.radiusMeters ?: 500).toString(), true)
+        val presets = LinearLayout(this)
+        listOf(250, 500, 1000).forEach { meters ->
+            presets.addView(button("${meters} m") { radius.setText(meters.toString()) },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(4) })
+        }
+        form.addView(presets)
+        form.addView(gap())
+        form.addView(text("Your arrival feedback", 18f, true))
+        selectedSound = if (restored != null) restored.getString("sound") else existing?.soundUri
         soundButton = button("Sound: ${soundName(selectedSound)}") { chooseSound() }
         form.addView(soundButton)
-        form.addView(text("Vibration", 14f, true))
         val patterns = listOf("Off", "Gentle", "Strong")
-        val vibration = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, patterns)
-            setSelection(patterns.indexOf(existing?.vibration ?: "Strong").coerceAtLeast(0))
+        val vibrationContainer = TextInputLayout(this).apply {
+            hint = "Vibration pattern"
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            endIconMode = TextInputLayout.END_ICON_DROPDOWN_MENU
         }
-        form.addView(vibration)
+        val vibration = com.google.android.material.textfield.MaterialAutoCompleteTextView(vibrationContainer.context).apply {
+            inputType = InputType.TYPE_NULL
+            minHeight = dp(56)
+            setAdapter(ArrayAdapter(this@MainActivity, android.R.layout.simple_dropdown_item_1line, patterns))
+            setText(restored?.getString("vibration") ?: existing?.vibration ?: "Strong", false)
+        }
+        vibrationContainer.addView(vibration, LinearLayout.LayoutParams(-1, -2))
+        form.addView(vibrationContainer)
         form.addView(text("Sound and vibration repeat for up to 60 seconds. Pick Silent and Off for notification-only feedback.", 13f))
-        val dialog = AlertDialog.Builder(this).setTitle(if (existing == null) "Add destination" else "Edit destination")
+        val dialog = MaterialAlertDialogBuilder(this).setTitle(if (existing == null) "Add destination" else "Edit destination")
             .setView(ScrollView(this).apply { addView(form) })
             .setNegativeButton("Cancel", null).setPositiveButton("Save", null).create()
         dialog.setOnShowListener {
@@ -316,7 +434,7 @@ class MainActivity : Activity() {
                         val destination = Destination(id = existing?.id ?: java.util.UUID.randomUUID().toString(),
                             name = name.text.toString().trim(), latitude = lat, longitude = lon,
                             radiusMeters = meters, enabled = existing?.enabled ?: true,
-                            soundUri = selectedSound, vibration = patterns[vibration.selectedItemPosition])
+                            soundUri = selectedSound, vibration = vibration.text.toString().takeIf { it in patterns } ?: "Strong")
                         destinations = if (existing == null) destinations + destination
                             else destinations.map { if (it.id == existing.id) destination else it }
                         persist(); dialog.dismiss(); render()
@@ -324,7 +442,19 @@ class MainActivity : Activity() {
                 }
             }
         }
+        editorState = {
+            Bundle().apply {
+                putString("existingId", existing?.id)
+                putString("name", name.text.toString())
+                putString("latitude", latitude.text.toString())
+                putString("longitude", longitude.text.toString())
+                putString("radius", radius.text.toString())
+                putString("sound", selectedSound)
+                putString("vibration", vibration.text.toString())
+            }
+        }
         dialog.setOnDismissListener {
+            editorState = null
             soundButton = null
             cancelCurrentLocation()
         }
@@ -404,7 +534,7 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, 200)
         } catch (_: android.content.ActivityNotFoundException) {
-            AlertDialog.Builder(this).setTitle("Arrival sound")
+            MaterialAlertDialogBuilder(this).setTitle("Arrival sound")
                 .setItems(arrayOf("Default alarm", "Silent")) { _, which ->
                     selectedSound = if (which == 0) null else ""
                     soundButton?.text = "Sound: ${soundName(selectedSound)}"

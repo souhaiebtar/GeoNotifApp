@@ -70,11 +70,9 @@ class MapPickerActivity : AppCompatActivity() {
             setNavigationIconTint(palette.ink)
         }, LinearLayout.LayoutParams(-1, -2))
         map = MapView(this).apply {
+            // Keep the map readable in both app themes by always showing light OSM tiles.
             setTileSource(TileSourceFactory.MAPNIK)
-            if (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
-                android.content.res.Configuration.UI_MODE_NIGHT_YES) {
-                overlayManager.tilesOverlay.setColorFilter(org.osmdroid.views.overlay.TilesOverlay.INVERT_COLORS)
-            }
+            overlayManager.tilesOverlay.setColorFilter(null)
             setMultiTouchControls(true)
             minZoomLevel = 2.0
             maxZoomLevel = 19.0

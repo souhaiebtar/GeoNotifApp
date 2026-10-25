@@ -5,6 +5,8 @@ import com.google.android.material.appbar.MaterialToolbar
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Bundle
 import android.view.WindowInsets
 import android.widget.Button
@@ -28,6 +30,9 @@ class MapPickerActivity : AppCompatActivity() {
     }
 
     private val palette by lazy { AppUi.palette(this) }
+    private var locationListener: android.location.LocationListener? = null
+    private var locationTimeout: Runnable? = null
+    private val handler = Handler(Looper.getMainLooper())
     private lateinit var map: MapView
     private lateinit var marker: Marker
     private lateinit var coordinates: TextView
@@ -107,6 +112,7 @@ class MapPickerActivity : AppCompatActivity() {
             }
         }.apply { isEnabled = false }
         selection.addView(confirm)
+        selection.addView(AppUi.button(this, "Show my current location") { recenterOnMe() })
         root.addView(AppUi.surface(this, selection), LinearLayout.LayoutParams(-1, -2).apply {
             marginStart = dp(12); marginEnd = dp(12); bottomMargin = dp(12)
         })
@@ -131,6 +137,84 @@ class MapPickerActivity : AppCompatActivity() {
         }
     }
 
+    private fun recenterOnMe() {
+        cancelRecenter()
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ), 300)
+            return
+        }
+        val manager = getSystemService(android.location.LocationManager::class.java)
+        if (!manager.isLocationEnabled) {
+            android.widget.Toast.makeText(this, "Enable device location to center on yourself.",
+                android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        val providers = listOf(
+            android.location.LocationManager.GPS_PROVIDER,
+            android.location.LocationManager.NETWORK_PROVIDER
+        ).filter { it in manager.allProviders && manager.isProviderEnabled(it) }
+        if (providers.isEmpty()) {
+            android.widget.Toast.makeText(this, "No location provider is available right now.",
+                android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        android.widget.Toast.makeText(this, "Finding your location…", android.widget.Toast.LENGTH_SHORT).show()
+        val listener = object : android.location.LocationListener {
+            override fun onLocationChanged(location: android.location.Location) {
+                val age = (android.os.SystemClock.elapsedRealtimeNanos() -
+                    location.elapsedRealtimeNanos) / 1_000_000
+                if (age !in 0..30_000 || !location.hasAccuracy() || location.accuracy > 100f) return
+                cancelRecenter()
+                map.controller.setZoom(15.0)
+                map.controller.animateTo(GeoPoint(location.latitude, location.longitude))
+            }
+            override fun onProviderDisabled(provider: String) = Unit
+            override fun onProviderEnabled(provider: String) = Unit
+            @Deprecated("Legacy callback")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+        }
+        locationListener = listener
+        try {
+            providers.forEach { provider ->
+                manager.requestLocationUpdates(provider, 1_000, 0f, listener,
+                    android.os.Looper.getMainLooper())
+            }
+            locationTimeout = Runnable {
+                cancelRecenter()
+                android.widget.Toast.makeText(this,
+                    "No accurate location fix yet. Try outdoors.", android.widget.Toast.LENGTH_LONG).show()
+            }.also { handler.postDelayed(it, 20_000) }
+        } catch (_: Exception) {
+            cancelRecenter()
+            android.widget.Toast.makeText(this, "Could not get a location fix.",
+                android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun cancelRecenter() {
+        locationListener?.let { getSystemService(android.location.LocationManager::class.java).removeUpdates(it) }
+        locationListener = null
+        locationTimeout?.let { handler.removeCallbacks(it) }
+        locationTimeout = null
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 300) {
+            if (grantResults.isNotEmpty() && grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED }) {
+                recenterOnMe()
+            } else {
+                android.widget.Toast.makeText(this,
+                    "Location permission denied. You can still pan and tap the map manually.",
+                    android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun select(point: GeoPoint) {
         if (!ArrivalRules.validCoordinates(point.latitude, point.longitude)) return
         selected = point
@@ -152,6 +236,25 @@ class MapPickerActivity : AppCompatActivity() {
         }
     }
     override fun onResume() { super.onResume(); map.onResume() }
-    override fun onPause() { map.onPause(); super.onPause() }
-    override fun onDestroy() { map.onDetach(); super.onDestroy() }
+
+    override fun onPostCreate(savedInstanceState: Bundle?) {
+        super.onPostCreate(savedInstanceState)
+        // Auto-center only on a fresh launch, not after rotation or returning from permission/settings.
+        if (savedInstanceState == null && !intent.getBooleanExtra("recentered", false)) {
+            intent.putExtra("recentered", true)
+            recenterOnMe()
+        }
+    }
+
+    override fun onPause() {
+        cancelRecenter()
+        map.onPause()
+        super.onPause()
+    }
+    override fun onDestroy() {
+        cancelRecenter()
+        handler.removeCallbacksAndMessages(null)
+        map.onDetach()
+        super.onDestroy()
+    }
 }
